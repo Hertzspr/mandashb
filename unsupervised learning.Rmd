@@ -1,0 +1,1028 @@
+---
+title: "Siswa Bahasa Indonesia Noni"
+author: "S.Y. Husada"
+date: "2022-08-18"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      message = F,
+                      warning = F)
+```
+
+# Overview
+
+## Objective
+
+This is an exploratory analysis on three classes of students scores in Indonesian language subject. These classes were under the tutelage of A. N. in MAN 3 Lebak and I hope I can discover something of value from this analysis. 
+
+## Data
+
+The data consists of prepared tables that I had processed in excel, they are: 
+
+1. `harian` table, that presents 4 sets of minor tests result that each consists of `proyek`, `portofolio`, and `praktek`;
+
+2. `phbo pat` table that presents 2 sets of major (half and last semester) tests result. 
+
+# Preparation
+
+## Library
+
+```{r}
+library(readxl)
+library(tidyverse)
+library(tidymodels)
+library(encryptr)
+library(janitor)
+library(skimr)
+library(plotly)
+library(glue)
+library(GGally)
+library(tidytext)
+library(FactoMineR)
+library(ggiraphExtra)
+library(factoextra)
+```
+
+## Import
+
+```{r}
+harian <- read_excel("edit_bi_kelas_noni.xlsx", 
+    sheet = "harian")
+semesteran <- read_excel("edit_bi_kelas_noni.xlsx", 
+    sheet = "phbo pat")
+```
+
+Clean the column names.
+
+```{r}
+harian <- clean_names(harian)
+semesteran <- clean_names(semesteran)
+```
+
+
+## Encryption
+
+Encrypt the name of students to protect privacy.
+
+### Generate Keys
+
+```{r}
+#genkeys()
+```
+### Encrypt Names
+
+Create codes for names.
+
+```{r}
+names_encryption <- 
+  harian %>% 
+  select(nama_siswa) %>%
+  unique() %>% 
+  mutate(
+    name_code = nama_siswa
+  ) %>% 
+  encrypt(name_code)
+```
+
+Replace real names in `nama_siswa` with the codes.
+
+```{r}
+harian_encrypted <- 
+  harian %>% 
+  left_join(names_encryption, 
+            by = c("nama_siswa" = "nama_siswa"),
+            keep = F) %>% 
+  select(-nama_siswa) %>% 
+  select(name_code, everything())
+
+
+harian_encrypted %>% head()
+```
+
+Compare total unique `nama_siswa` and unique `name_code` to check.
+
+```{r}
+n_distinct(harian$nama_siswa)
+n_distinct(harian_encrypted$name_code)
+```
+
+Encrypt `semesteran` table as well. 
+
+```{r}
+semesteran_encrypted <- 
+  semesteran %>% 
+  left_join(names_encryption, 
+            by = c("nama_siswa" = "nama_siswa"),
+            keep = F) %>% 
+  select(-nama_siswa) %>% 
+  select(name_code, everything())
+
+
+semesteran_encrypted %>% head()
+```
+
+```{r}
+n_distinct(semesteran$nama_siswa)
+n_distinct(semesteran_encrypted$name_code)
+```
+
+I had processed it in excel, but let's check missing data again. 
+
+```{r}
+anyNA(harian_encrypted)
+anyNA(semesteran_encrypted)
+```
+
+### Shuffle 
+
+Shuffle the row so the real names can't be identified using the order of the original rows. 
+```{r}
+harian_encrypted <- harian_encrypted %>% slice_sample(prop = 1)
+semesteran_encrypted <- semesteran_encrypted %>% slice_sample(prop = 1)
+```
+
+# Analysis
+
+## Exploratory
+
+```{r}
+glimpse(harian_encrypted)
+glimpse(semesteran_encrypted)
+```
+
+We can join the tables with name_code. 
+
+```{r}
+data <-
+  harian_encrypted %>% left_join(semesteran_encrypted[,c(1, 3, 4)], 
+                                 by = "name_code",
+                                 suffix = c("_h", "_s"))
+```
+
+
+```{r}
+glimpse(data)
+```
+Convert all the chr columns except name_code, to factor. 
+
+```{r}
+data <- data %>% 
+  mutate(across(.cols = c(where(is.character), -name_code),.fns = as.factor))
+```
+```{r}
+glimpse(data)
+```
+```{r}
+skim(data = data)
+```
+
+```{r}
+summary(data)
+```
+
+### Nilai Rata-rata Harian per Kelas
+
+
+```{r}
+data <- data %>% 
+  pivot_longer(cols = 6:8,
+               names_to = "ppp",
+               values_to = "nilai_ppp") 
+```
+
+```{r}
+data_mean_ph <-
+  data %>% 
+  group_by(kelas, penilaian_h, materi, ppp) %>% 
+  summarise(rata2_ph = round(mean(nilai_ph),digits = 2)) %>% 
+  mutate(avg = glue("Nilai Rata-rata {rata2_ph}"))
+```
+
+```{r}
+acols <- c("Harian 1" = "#C6E0FF", 
+           "Harian 2" = "#579A9E",
+           "Harian 3" = "#3292C3",
+           "Harian 4" = "#BCAB79")
+
+rata.plot <- ggplot(data_mean_ph, aes(y = kelas, x = rata2_ph, fill = penilaian_h))+
+  geom_col(aes(text = avg))+
+  facet_wrap(~penilaian_h)+
+  theme_minimal()+
+  theme(legend.position = "none",
+        axis.title.y = element_blank())+
+  labs(title = "Perbandingan Rata-rata Nilai Harian Pelajaran Bahasa",
+       subtitle = "2020/2021 Semester Genap",
+       x = "Nilai")+
+  scale_fill_manual(
+    values = acols      
+  )+
+  xlim(0, 100)
+
+#rata.plot
+```
+
+```{r}
+ggplotly(rata.plot, tooltip = "text")
+```
+### Nilai Ranah Keterampilan
+
+```{r}
+data <- data %>% 
+  mutate( # repair ppp content
+    ppp = str_replace(ppp, "p", "P" ) 
+  ) %>% 
+  mutate( # limit digits
+    nilai_ph = round(nilai_ph, digits = 2)
+  ) %>% 
+    mutate( # creating tooltip
+    exp = glue(
+      "{kelas} 
+      {penilaian_h}: {nilai_ph}
+      {ppp}: {nilai_ppp}"
+    )
+  )
+```
+
+
+
+```{r}
+fcols <- c("XI IPS 1" = "#BEEF9E", 
+           "XI IPS 2" = "#3292C3",
+           "XI MIPA" = "#BCAB79")
+
+ppp.plot <- ggplot(data, aes(y = materi, 
+                 x = nilai_ppp, 
+                 fill = kelas))+
+  geom_col(position = position_dodge(width = 0.95),
+           aes(text = exp))+
+  facet_wrap(~ppp)+
+  theme_minimal()+
+  theme(legend.position = "none",
+        axis.title.y = element_blank())+
+  labs(title = "Perbandingan Rincian Nilai Tugas Pelajaran Bahasa",
+       subtitle = "2020/2021 Semester Genap",
+       x = "Nilai")+
+  scale_fill_manual(
+    values = fcols      
+  )
+
+#ppp.plot
+```
+
+```{r}
+ggplotly(ppp.plot, tooltip = "text")
+```
+
+### Nilai harian x ppp
+
+```{r}
+hxp.plot <- 
+  ggplot(data, 
+         aes(x = nilai_ppp, 
+             y = nilai_ph))+
+  geom_jitter(aes(col = kelas,
+                  text = exp),
+              width = 0.3, 
+              height = 0.3, 
+              alpha = 0.7)+
+  theme_minimal()+
+  labs(title = "Hubungan Nilai PPP dan Penilaian Harian",
+       x = "Nilai PPP",
+       y = "Penilaian Harian")+
+    scale_color_manual(
+    values = fcols      
+  )+
+  theme(legend.position = "none",
+        axis.title.y = element_blank())
+
+  
+
+#hxp.plot
+```
+
+```{r}
+ggplotly(hxp.plot, tooltip = "text")
+```
+
+#### Korelasi Nilai Penilaian Ranah Keterampilan dan Penilaian Harian
+
+```{r}
+corp3ph.kelas.materi <- data %>% 
+  group_by(kelas, materi) %>% 
+  summarize(correlation = cor(nilai_ppp, nilai_ph))
+corp3ph.kelas.materi
+```
+
+```{r}
+corp3ph.kelas.materi %>% slice_max(correlation)
+corp3ph.kelas.materi %>% slice_min(correlation)
+```
+
+```{r}
+
+cor.plot.k.m <- 
+ggplot(corp3ph.kelas.materi, 
+       aes(x = materi, 
+           y = correlation,
+           text = kelas))+
+  geom_col(aes(fill = kelas), 
+           position = position_dodge()
+           )+
+    theme_minimal()+
+  labs(title = "Korelasi Materi dan Nilai Harian",
+       x = "Materi")+
+    scale_fill_manual(
+    values = fcols      
+  )+
+  theme(legend.position = "none",
+        axis.title.y = element_blank())
+
+#cor.plot.k.m
+```
+
+```{r}
+ggplotly(cor.plot.k.m, tooltip = "text")
+```
+
+#### Korelasi Penilaian Ranah Keterampilan dan Penilaian Harian
+
+```{r}
+corp3ph.kelas.p3 <- data %>% 
+  group_by(kelas, ppp) %>% 
+  summarize(correlation = cor(nilai_ppp, nilai_ph))
+corp3ph.kelas.p3
+```
+
+```{r}
+corp3ph.kelas.p3 %>% slice_max(correlation)
+corp3ph.kelas.p3 %>% slice_min(correlation)
+```
+
+
+```{r}
+cor.plot.k.p <- 
+ggplot(corp3ph.kelas.p3, aes(ppp, correlation))+
+    geom_col(aes(fill = kelas, text = correlation), 
+           position = position_dodge()
+           )+
+    theme_minimal()+
+  labs(title = "Korelasi Penilaian Ranah Keterampilan dan Penilaian Harian",
+       subtitle = "Berdasarkan Proyek/Praktek/Portfolio",
+       x = "Ranah Keterampilan")+
+    scale_fill_manual(
+    values = fcols      
+  )+
+  theme(legend.position = "none",
+        axis.title.y = element_blank())
+
+#cor.plot.k.p
+```
+
+```{r}
+ggplotly(cor.plot.k.p, tooltip = "text")
+```
+
+
+### Perbandingan Nilai Semesteran Antar Kelas
+
+```{r}
+plot.semester.k <-
+ggplot(data, aes(x = nilai, text = exp))+
+  geom_histogram(aes(fill = kelas),
+                 binwidth = 1)+
+  facet_wrap(~penilaian_s + kelas)+
+  theme_minimal()+
+  theme(legend.position = "none")+
+  labs(title = "Perbandingan Sebaran Nilai Semesteran Antar Kelas",
+       x = "Nilai",
+       y = "Jumlah Siswa")+
+  scale_fill_manual(
+    values = fcols      
+  )
+#plot.semester.k
+```
+
+```{r}
+ggplotly(plot.semester.k, tooltip = "text")
+```
+
+#### Korelasi Nilai Harian dan Nilai Semesteran
+
+```{r}
+k.kelas.ph.s <- 
+  data %>% 
+  group_by(kelas, materi) %>% 
+  summarize(correlation = cor(nilai_ph, nilai))
+
+k.kelas.ph.s
+```
+
+```{r}
+bcols <- c("Drama" = "#C6E0FF", 
+           "Karya Ilmiah" = "#579A9E",
+           "Proposal Kegiatan" = "#3292C3",
+           "Resensi" = "#BCAB79")
+
+plot.k.h.s <-
+ggplot(k.kelas.ph.s, aes(x = kelas, 
+                         y = correlation,
+                         fill = materi,
+                         text = materi))+
+  geom_col(position = position_dodge())+
+  scale_fill_manual(
+    values = bcols
+  )+
+  theme_minimal()+
+  theme(legend.position = "none",
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank())+
+  labs(title = "Korelasi Nilai Harian dan Semesteran",
+       subtitle = "Berdasarkan Kelas dan Materi")
+  
+
+#plot.k.h.s
+```
+
+```{r}
+ggplotly(plot.k.h.s, tooltip = "text")
+```
+
+#### Korelasi Nilai Ranah Keterampilan dan Nilai Semesteran
+
+```{r}
+k.kelas.ppp.s <- 
+  data %>% 
+  group_by(ppp, kelas) %>% 
+  summarize(correlation = cor(nilai_ppp, nilai)) %>% 
+  arrange(desc(correlation))
+
+k.kelas.ppp.s
+```
+
+```{r}
+
+plot.ppp.k.s <-
+ggplot(k.kelas.ppp.s, aes(x = ppp, 
+                         y = correlation,
+                         fill = kelas,
+                         text = kelas))+
+  geom_col(position = position_dodge())+
+  scale_fill_manual(
+    values = fcols
+  )+
+  theme_minimal()+
+  theme(legend.position = "none",
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank())+
+  labs(title = "Korelasi Penilaian Ranah Keterampilan dan Nilai Semesteran",
+       subtitle = "Berdasarkan Kelas")
+  
+
+#plot.ppp.k.s
+```
+
+```{r}
+ggplotly(plot.ppp.k.s, tooltip = "text")
+```
+
+### Perbandingan Ranah Keterampilan Hingga Semesteran
+
+```{r}
+data_edit_col <- 
+  data %>% 
+  mutate("Nilai Ranah Keterampilan" = nilai_ppp,
+         "Nilai Harian" = nilai_ph,
+         "Nilai Semesteran" = nilai,
+         "Kelas" = kelas)
+
+p.par.nilai <- 
+ggparcoord(data_edit_col, 
+           columns = c("Nilai Ranah Keterampilan", 
+                       "Nilai Harian", 
+                       "Nilai Semesteran"),
+           groupColumn = "Kelas",
+           scale = "uniminmax",
+           order = c(11,12,13),
+           showPoints = TRUE,
+           splineFactor = 4,
+           title = "Paralel Plot Nilai Bahasa Indonesia",
+           alphaLines = 0.6)+ 
+  scale_color_manual(values = fcols) +
+  theme(
+    axis.title.x = element_blank()
+  )+
+  theme_minimal()+
+  labs(y = "Scaled with UniMinMax",
+       col = "Kelas")
+```
+
+```{r}
+ggplotly(p.par.nilai, tooltip = "Kelas")
+```
+
+
+#### Perbandingan Korelasi 
+```{r}
+s.p3.h.s <-
+data %>% 
+  group_by(ppp, penilaian_h, penilaian_s) %>% 
+  summarise(kor_ppp_ph = cor(nilai_ppp, nilai_ph),
+            kor_ph_s = cor(nilai_ph, nilai))
+
+s.p3.h.s
+```
+
+Impute missing values. 
+```{r}
+imputed.s.p3.h.s <-
+  recipe(~ ., data = s.p3.h.s) %>%
+  step_impute_bag(kor_ppp_ph) %>% 
+  prep(s.p3.h.s)
+imputed.s.p3.h.s 
+```
+
+```{r}
+df.imputed.s.p3.h.s <-
+  bake(imputed.s.p3.h.s, new_data = s.p3.h.s) 
+df.imputed.s.p3.h.s
+anyNA(df.imputed.s.p3.h.s)
+```
+
+```{r}
+pcols = c(
+  "Portofolio" = "#BEEF9E",
+  "Praktek" = "#3292C3",
+  "Proyek" = "#BCAB79"
+)
+  
+p.dens <-
+ggplot(df.imputed.s.p3.h.s, aes(kor_ppp_ph, kor_ph_s)) +
+  stat_density2d(geom="tile", aes(fill = ..density..), contour = FALSE) + 
+  geom_point(size = 6, color = "white")+
+  geom_point(aes(col=ppp, text = penilaian_s), size = 3)+
+  labs(title = "Hubungan Nilai Korelasi",
+       x = "Korelasi Nilai Ranah Keterampilan dan Nilai Harian",
+       y = "Korelasi Nilai Harian dan Nilai Semesteran",
+       color = "Keterampilan",
+       fill = "Density"
+       )+
+  theme_minimal()+
+  scale_color_manual(values = pcols)+
+  facet_wrap(~penilaian_s)
+  
+
+#p.dens 
+```
+
+```{r}
+ggplotly(p.dens, tooltip = "text")
+```
+
+#### Uji Korelasi
+
+```{r}
+uk.ppp.s <-
+data %>% 
+  select(kelas, nilai_ppp, nilai) %>% 
+  nest(data = c(nilai_ppp, nilai)) %>% 
+  mutate(
+    test = map(data, ~ cor.test(.$nilai_ppp,
+                               .$nilai)),
+    tidied = map(test, tidy)
+  ) %>% 
+  unnest(cols = tidied) %>% 
+  select(-data, -test)
+uk.ppp.s
+```
+
+
+
+
+```{r}
+uk.ph.s <-
+data %>% 
+  select(kelas, nilai_ph, nilai) %>% 
+  nest(data = c(nilai_ph, nilai)) %>% 
+  mutate(
+    test = map(data, ~ cor.test(.$nilai_ph,
+                               .$nilai)),
+    tidied = map(test, tidy)
+  ) %>% 
+  unnest(cols = tidied) %>% 
+  select(-data, -test)
+```
+
+```{r}
+uk.ph.s
+```
+
+
+## PCA
+
+### Preprocess
+
+```{r}
+data_wide <-
+  data %>%
+  group_by(name_code) %>% 
+  pivot_wider(
+    names_from = ppp,
+    values_from = nilai_ppp,
+    values_fill = 0,
+  ) %>% 
+  pivot_wider(
+    names_from = penilaian_h,
+    values_from = nilai_ph,
+    values_fill = 0
+  ) %>% 
+  pivot_wider(
+    names_from = penilaian_s,
+    values_from = nilai,
+  ) %>% 
+  summarise_all(mean) %>% 
+  select(-c(kelas, materi, exp))
+  
+data_wide
+```  
+
+Use recipe to mark some column as ID, then normalise and process the rest. 
+
+```{r}
+process_rec <- # define recipe
+  recipe(~., data = data_wide) %>% 
+  update_role(name_code, new_role = "id") %>% 
+  step_dummy(all_nominal_predictors()) %>% 
+  step_normalize(all_predictors()) 
+
+process_prep <- prep(process_rec) #evaluate recipe
+```
+
+Before applying pca, let's look at the prepared data.
+
+```{r}
+juice(process_prep)
+```
+
+Now let's apply step_pca().
+
+```{r}
+pca_rec <-
+  process_rec %>% 
+  step_pca(all_predictors())
+
+pca_prep <- prep(pca_rec)
+```
+
+
+```{r}
+names(pca_prep)
+```
+Look at the pca results. 
+
+```{r}
+juice(pca_prep)
+```
+
+
+#### PC Contributions to Variance Explained
+
+Find standard deviation in each PC from steps.
+
+```{r}
+sdev <- 
+  pca_prep$steps[[3]]$res$sdev
+```
+
+Calculate percent of variation with standard deviation.
+
+```{r}
+percent_variation <- sdev^2 / sum(sdev^2)
+```
+
+```{r}
+var_df <- data.frame(PC=paste0("PC",1:length(sdev)),
+                     var_explained=percent_variation,
+                     stringsAsFactors = FALSE)
+var_df
+```
+
+Plot.
+
+```{r}
+var_df %>%
+  mutate(PC = fct_inorder(PC),
+         var_rounded = round(var_explained, digits = 2),
+         var_cum = cumsum(var_rounded)) %>%
+  ggplot(aes(x = PC,
+             y= var_explained, 
+             fill = PC))+
+  geom_col()+ 
+  scale_fill_manual(
+    values = c(
+      "#C6E0FF",
+      "#579A9E",
+      "#3292C3",
+      "#BCAB79",
+      "maroon",
+      "white",
+      "violet",
+      "grey",
+      "brown",
+      "lightyellow"
+    )
+  )+
+  geom_label(aes(label = var_cum))+
+  labs(title = "PC Contributions to Variance Explained",
+       x = NULL,
+       y = "Var Explained")+
+  theme(legend.position = "none")
+```
+
+It takes 4 PC to retain 91% variance explained. 
+
+```{r}
+tidied_pca <- tidy(pca_prep, 
+                   number = 3) # the number of step in recipe, normalize is 2, pca is 3
+```
+
+#### Visualize Principal Components
+
+```{r}
+tidied_pca %>%
+  filter(component %in% paste0("PC", 1:6)) %>%
+  mutate(component = fct_inorder(component)) %>%
+  ggplot(aes(value, terms, fill = terms)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~component, nrow = 1) +
+  labs(y = NULL)+
+  scale_fill_manual(
+    values = c(
+      "maroon",
+      "white",
+      "violet",
+      "grey",
+      "brown",
+      "lightyellow",
+      "#C6E0FF",
+      "#579A9E",
+      "#3292C3",
+      "#BCAB79"
+    )
+  )
+```
+
+
+Focus on the first 4 PC.
+
+```{r}
+
+tidied_pca %>%
+  filter(component %in% paste0("PC", 1:4)) %>%
+  group_by(component) %>%
+  top_n(8, abs(value)) %>%
+  ungroup() %>%
+  mutate(terms = reorder_within(terms, abs(value), component)) %>%
+  ggplot(aes(abs(value), terms, fill = value > 0)) +
+  geom_col() +
+  facet_wrap(~component, scales = "free_y") +
+  scale_y_reordered() +
+  labs(
+    x = "Absolute value of contribution",
+    y = NULL, fill = "Positive?"
+  )+
+  scale_fill_manual(
+    values = c("#BEEF9E", "#3292C3")
+  )
+```
+
+The biggest divergence is at PC2, between Harian 2 and Harian 4. 
+
+```{r}
+# use juice() to transform int dataframe
+juiced_pca <- juice(pca_prep)
+juiced_pca 
+```
+
+```{r}
+  ggplot(juiced_pca, aes(PC1, PC2)) +
+  geom_point(alpha = 0.7, size = 2) +
+  labs(color = NULL)+
+  theme_minimal()
+
+  ggplot(juiced_pca, aes(PC1, PC3)) +
+  geom_point(alpha = 0.7, size = 2) +
+  labs(color = NULL)+
+  theme_minimal()
+
+  ggplot(juiced_pca, aes(PC1, PC4)) +
+  geom_point(alpha = 0.7, size = 2) +
+  labs(color = NULL)+
+  theme_minimal()
+```
+
+
+#### PCA with FactoMiner
+
+```{r}
+pca_rec2 <- # define recipe
+  recipe(~., data = data_wide) %>% 
+  update_role(name_code, new_role = "id") %>% 
+  step_normalize(all_predictors()) %>% 
+  prep()
+```
+
+```{r}
+d4facto <- juice(pca_rec2)
+```
+```{r}
+d4facto
+```
+
+```{r}
+# library(FactoMineR)
+
+facto_pca <- PCA(
+  X = d4facto,
+  scale.unit = F, 
+  quali.sup = c(1), 
+  ncp = 6, 
+  graph = F #disable visualization
+  )
+```
+
+```{r}
+head(facto_pca$ind$coord)
+```
+
+```{r}
+plot.PCA(
+  x = facto_pca, 
+  choix = "ind", # individual factor map# coloring
+  select = "contrib 1", # 5 most contributing factor
+  invisible = "quali"
+)
+```
+
+```{r}
+d4facto[71,]
+```
+```{r}
+thename <- data_wide[71,] %>% pull(name_code)
+```
+```{r}
+data_wide %>% 
+  filter(name_code == thename)
+```
+
+```{r}
+plot.PCA(
+  x = facto_pca, 
+  choix = "var",
+  autoLab = "yes"
+)
+```
+
+```{r}
+plot.PCA(
+  x = facto_pca, 
+  choix = "var",
+  select = "contrib 1"
+)
+```
+
+The "Ranah Keterampilan" that's most correlated with the semester exam score (PAT) is "Praktek" assignment. But, the variable that has the most contribution the the two dimension the graph was built on, is "Proyek". 
+
+## K-means Clustering
+
+Reuse d4facto, but without the first 3 columns. 
+
+```{r}
+d4kmeans <- d4facto %>% 
+  select(-1)
+head(d4kmeans)
+```
+
+### Find K
+
+We have to decide the numbers of K. Let's simulate 9 Ks.
+
+```{r}
+kmsim <- 
+tibble(k = 1:9)
+
+kmsim
+```
+
+Create kmeans clustering for each number of K.
+
+```{r}
+set.seed(1)
+kmsim <- kmsim %>% 
+mutate(
+    # cluster the data 9 times
+    kclust = map(k, ~ kmeans(d4kmeans, .))
+  )
+
+kmsim 
+```
+
+#### Glance
+
+Apply tidy, glance, and augment to each kclust. 
+
+```{r}
+set.seed(1)
+kmsim <- kmsim %>% 
+mutate(
+  glanced = map(kclust, glance)
+)
+kmsim
+```
+
+Unnest glanced
+
+```{r}
+clustering <-
+  kmsim %>% 
+  unnest(cols = glanced)
+clustering %>% head()
+```
+
+```{r}
+ggplot(clustering, aes(k, tot.withinss))+
+  geom_line()+
+  geom_point()
+```
+
+There are 3 centers before the tot.withinss decrease slowed down. That's a good enough elbow. 
+So our kmeans is:
+
+```{r}
+thek <- kmsim %>% 
+  filter(k == 3) %>% 
+  pull(kclust)
+```
+
+Assign the cluster identification to a new column in d4kmeans
+
+```{r}
+d4kmeans$cluster <- thek[[1]][[1]]
+```
+
+### Profiling
+
+```{r}
+student_score_profile <- 
+d4kmeans %>% 
+  group_by(cluster) %>% 
+  summarise_all(mean)
+student_score_profile
+```
+
+```{r fig.height=10, fig.width=10}
+#library(ggiraphExtra)
+ggRadar(
+  data=student_score_profile,
+  mapping = aes(colours = cluster),
+  ylim = 0.8
+)+
+  facet_wrap(~cluster)
+```
+```{r}
+d4kmeans %>% 
+  head()
+```
+
+#### Viz
+
+```{r}
+#library(factoextra)
+set.seed(1)
+x <- kmeans(d4kmeans, 3)
+
+fviz_cluster(object = x, 
+             data = d4kmeans)
+```
+
+## Combine 
+
+```{r}
+km_x_pca <- PCA(X = d4kmeans, # this table has already added with the cluster
+               quali.sup = 10, 
+               graph=F) 
+
+fviz_pca_biplot(km_x_pca,
+                habillage = "cluster",
+                geom.ind = "point", # menampilkan titik observasi saja
+                addEllipses = T, # membuat elips disekitar cluster
+                col.var = "navy"
+)
+```
+
+Summary: 
+
+-
